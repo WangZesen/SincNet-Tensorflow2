@@ -101,13 +101,18 @@ class Preprocess:
         return model
 
     def run(self):
-        train_ds = self._init_data()
+        train_ds = self._init_data().take(10)
         model = self._build_model()
         
         optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
         loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
         model.compile(loss=loss, optimizer=optimizer, metrics=['accuracy'])
+        
+        print(model.get_layer(index=0).get_weights())
+
         model.fit(train_ds, epochs=1, class_weight=self._class_weight)
+
+        print(model.get_layer(index=0).get_weights())
 
 def process(cfg_dir):
     p = Preprocess(cfg_dir)

@@ -48,6 +48,9 @@ class Preprocess:
         data = [x.strip('\n') for x in lines]
         random.shuffle(data)
 
+        train_data = data[:int(len(data) * 0.875)]
+        valid_data = data[int(len(data) * 0.875):]
+
         # Collect Labels
         label_dict = {}
         for i in range(len(data)):
@@ -68,11 +71,15 @@ class Preprocess:
             label = tf.argmax(content[1] == labels)
             return waveform, label
         
-        train_ds = tf.data.Dataset.from_tensor_slices(data)
+        train_ds = tf.data.Dataset.from_tensor_slices(train_data)
         train_ds = train_ds.shuffle(buffer_size=50000)
         train_ds = train_ds.map(__get_waveform_and_label, num_parallel_calls=tf.data.AUTOTUNE)
         train_ds = train_ds.batch(self._batch_size)
-        return train_ds
+
+        valid_ds = tf.data.Dataset.from_tensor_slices(valid_data)
+        valid_ds = valid_ds.map(__get_waveform_and_label, num_parallel_calls=tf.data.AUTOTUNE)
+        valid_ds = valid_ds.batch(self._batch_size)
+        return train_ds, valid_ds
  
     def _build_model(self):
         model = tf.keras.Sequential([
@@ -101,7 +108,7 @@ class Preprocess:
         return model
 
     def run(self):
-        train_ds = self._init_data().take(10)
+        train_ds, valid_ds = self._init_data()
         model = self._build_model()
         
         optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
@@ -109,9 +116,7 @@ class Preprocess:
         model.compile(loss=loss, optimizer=optimizer, metrics=['accuracy'])
         
         print(model.get_layer(index=0).get_weights())
-
-        model.fit(train_ds, epochs=1, class_weight=self._class_weight)
-
+        model.fit(train_ds, epochs=2, class_weight=self._class_weight, validation_data=valid_ds)
         print(model.get_layer(index=0).get_weights())
 
 def process(cfg_dir):

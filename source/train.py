@@ -71,13 +71,15 @@ class Preprocess:
             label = tf.argmax(content[1] == labels)
             return waveform, label
         
+        AUTOTUNE = tf.data.AUTOTUNE if tf.__version__.startswith('2.4') else tf.data.experimental.AUTOTUNE
+
         train_ds = tf.data.Dataset.from_tensor_slices(train_data)
         train_ds = train_ds.shuffle(buffer_size=50000)
-        train_ds = train_ds.map(__get_waveform_and_label, num_parallel_calls=tf.data.AUTOTUNE)
+        train_ds = train_ds.map(__get_waveform_and_label, num_parallel_calls=AUTOTUNE)
         train_ds = train_ds.batch(self._batch_size)
 
         valid_ds = tf.data.Dataset.from_tensor_slices(valid_data)
-        valid_ds = valid_ds.map(__get_waveform_and_label, num_parallel_calls=tf.data.AUTOTUNE)
+        valid_ds = valid_ds.map(__get_waveform_and_label, num_parallel_calls=AUTOTUNE)
         valid_ds = valid_ds.batch(self._batch_size)
         return train_ds, valid_ds
  

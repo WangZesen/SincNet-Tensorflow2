@@ -50,7 +50,14 @@ class SincLayer(tf.keras.layers.Layer):
         right_band[-1] = (self.sample_rate / 2) - 100 # Why -100? Save space for safe padding
         self.set_weights([left_band / self.sample_rate, (right_band - left_band) / self.sample_rate])
 
-        
+        # Hamming Window
+        n = np.linspace(0, self.filter_dim, self.filter_dim)
+        window = 0.54 - 0.46 + np.cos(2 * math.pi * n / self.filter_dim)
+        self.window = tf.constant(window.reshape([1, -1]), dtype=tf.float32)    
+
+        # Construct Kernel
+        n = np.linspace(1, (self.filter_dim - 1) / 2, int((self.filter_dim - 1) / 2)).reshape((1, -1))  # Half of filter
+        self._n = tf.constant(n / self.sample_rate, dtype=tf.float32) # Why divided by sample_rate?    
     
     def call(self, x):
         # Add Safe Padding
@@ -59,18 +66,9 @@ class SincLayer(tf.keras.layers.Layer):
         self.filter_low_cutoff = tf.reshape(self.filter_low_cutoff, [-1, 1])
         self.filter_high_cutoff = tf.reshape(self.filter_high_cutoff, [-1, 1])
 
-        # Hamming Window
-        n = np.linspace(0, self.filter_dim, self.filter_dim)
-        window = 0.54 - 0.46 + np.cos(2 * math.pi * n / self.filter_dim)
-        self.window = tf.constant(window.reshape([1, -1]), dtype=tf.float32)
-
-        # Construct Kernel
-        n = np.linspace(1, (self.filter_dim - 1) / 2, int((self.filter_dim - 1) / 2)).reshape((1, -1))  # Half of filter
-        n = tf.constant(n / self.sample_rate, dtype=tf.float32) # Why divided by sample_rate?
-
-        inter_low = 2 * math.pi * tf.linalg.matmul(self.filter_low_cutoff * self.sample_rate, n)
+        inter_low = 2 * math.pi * tf.linalg.matmul(self.filter_low_cutoff * self.sample_rate, self._n)
         low_low_pass = 2 * tf.multiply(tf.math.sin(inter_low) / inter_low, self.filter_low_cutoff)
-        inter_high = 2 * math.pi * tf.linalg.matmul(self.filter_high_cutoff * self.sample_rate, n)
+        inter_high = 2 * math.pi * tf.linalg.matmul(self.filter_high_cutoff * self.sample_rate, self._n)
         high_low_pass = 2 * tf.multiply(tf.math.sin(inter_high) / inter_high, self.filter_high_cutoff)
         band_pass = high_low_pass - low_low_pass
 

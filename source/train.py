@@ -62,7 +62,7 @@ class Preprocess:
         inverse_sum = sum([1 / label_dict[key] for key in label_dict])
         self._class_weight = {}
         for i in range(len(labels)):
-            self._class_weight[i] = label_dict[labels[i]] / inverse_sum
+            self._class_weight[i] = (1 / label_dict[labels[i]]) / inverse_sum * len(labels)
 
         # Parse Function
         def __get_waveform_and_label(raw_data):
@@ -114,7 +114,6 @@ class Preprocess:
         optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
         loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
         model.compile(loss=loss, optimizer=optimizer, metrics=['accuracy'])
-        
         print(model.get_layer(index=0).get_weights())
         model.fit(train_ds, epochs=2, class_weight=self._class_weight, validation_data=valid_ds)
         print(model.get_layer(index=0).get_weights())

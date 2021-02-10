@@ -87,7 +87,7 @@ class Preprocess:
             while line:
                 content = line.strip('\n').split(' ')
                 audio_dir, label = content[0], content[1]
-                subprocess.check_call(f'sox {audio_dir} -t wav -r {self._sample_rate} -b 16 {tmp_file}')
+                subprocess.check_call(f'sox {audio_dir} -t wav -r {self._sample_rate} -b 16 {tmp_file}', shell=True)
                 data, sample_rate = tf.audio.decode_wav(tf.io.read_file(tmp_file))
                 assert sample_rate == self._sample_rate
                 data = data.numpy().reshape((-1))

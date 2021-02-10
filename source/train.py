@@ -84,22 +84,18 @@ class Preprocess:
     def _build_model(self):
         model = tf.keras.Sequential([
             tf.keras.layers.Input(shape=[self._sample_rate, 1]),
-            SincLayer(16, 251, 16000),
+            SincLayer(64, 251, 16000),
             tf.keras.layers.MaxPooling1D(pool_size=3, strides=3),
             tf.keras.layers.LeakyReLU(0.2),
-            tf.keras.layers.Conv1D(16, 5, 1, padding='valid'),
-            tf.keras.layers.MaxPooling1D(pool_size=3, strides=3),
+            tf.keras.layers.Conv1D(64, 5, 3, padding='valid'),
             tf.keras.layers.LeakyReLU(0.2),
-            tf.keras.layers.Conv1D(16, 5, 1, padding='valid'),
-            tf.keras.layers.MaxPooling1D(pool_size=3, strides=3),
+            tf.keras.layers.Conv1D(32, 5, 3, padding='valid'),
             tf.keras.layers.LeakyReLU(0.2),
-            tf.keras.layers.Conv1D(16, 5, 1, padding='valid'),
-            tf.keras.layers.MaxPooling1D(pool_size=3, strides=3),
+            tf.keras.layers.Conv1D(32, 5, 3, padding='valid'),
             tf.keras.layers.LeakyReLU(0.2),
-            tf.keras.layers.Conv1D(16, 5, 1, padding='valid'),
-            tf.keras.layers.MaxPooling1D(pool_size=3, strides=3),
+            tf.keras.layers.Conv1D(32, 5, 3, padding='valid'),
             tf.keras.layers.LeakyReLU(0.2),
-            tf.keras.layers.Conv1D(16, 5, 1, padding='valid'),
+            tf.keras.layers.Conv1D(16, 5, 3, padding='valid'),
             tf.keras.layers.Flatten(),
             tf.keras.layers.Dense(128, activation=tf.nn.relu),
             tf.keras.layers.Dense(self._n_label)
@@ -115,7 +111,7 @@ class Preprocess:
         loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
         model.compile(loss=loss, optimizer=optimizer, metrics=['accuracy'])
         print(model.get_layer(index=0).get_weights())
-        model.fit(train_ds, epochs=2, class_weight=self._class_weight, validation_data=valid_ds)
+        model.fit(train_ds, epochs=40, class_weight=self._class_weight, validation_data=valid_ds)
         print(model.get_layer(index=0).get_weights())
 
 def process(cfg_dir):

@@ -15,10 +15,17 @@ class SincLayer(tf.keras.layers.Layer):
     def mel_to_hz(mel):
         return (10 ** (mel / 2595) - 1) * 700
 
-    def __init__(self, n_filter, filter_dim, sample_rate, **kwargs):
+    def __init__(self,
+        n_filter,
+        filter_dim,
+        sample_rate,
+        stride,
+        **kwargs):
+
         self.n_filter = n_filter
         self.filter_dim = filter_dim
         self.sample_rate = sample_rate
+        self.stride = stride
         assert self.filter_dim % 2 == 1  # Make sure it can be symetric
         super(SincLayer, self).__init__(**kwargs)
     
@@ -80,10 +87,10 @@ class SincLayer(tf.keras.layers.Layer):
         return tf.nn.conv1d(
             x,
             filters=self.kernel,
-            stride=1,
+            stride=self.stride,
             padding='VALID')
     
     def compute_output_shape(self, input_shape):
-        # 1D Conv with (pad=VALID, stride=1)
-        output_shape = (input_shape[0], input_shape[1] - self.filter_dim + 1, self.n_filter)
+        # 1D Conv with (pad=VALID)
+        output_shape = (input_shape[0], (input_shape[1] - self.filter_dim) // self.stride + 1, self.n_filter)
         return output_shape

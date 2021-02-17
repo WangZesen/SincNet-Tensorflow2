@@ -1,4 +1,5 @@
 import os
+from functools import partial
 import subprocess
 import configparser
 import numpy as np
@@ -16,18 +17,14 @@ class Preprocess:
         }
         cfg.add_section('CONFIG')
         cfg['CONFIG'] = {
-            '#train_proportion: proportion of training data (test is inferred)': '',
-            'train_proportion': '0.7',
-            '#valid_proportion: proportion of validation data (test is inferred)': '',
-            'valid_proportion': '0.1',
-            '#window_size: window size in milisecond (pad zero to window size if shorter)': '',
+            '#window_size: sample window size in milisecond (pad zero to window size if shorter)': '',
             'window_size': '1000',
             '#window_stride: stride length in milisecond': '',
-            'window_stride': '497',
+            'window_stride': '797',
             '#sample_rate: sampling rate': '',
             'sample_rate': '16000',
             '#background_label: label for background': '',
-            'backgronnd_label': 'bg',
+            'background_label': 'bg',
         }
         with open(temp_dir, 'w') as f:
             cfg.write(f)
@@ -46,8 +43,6 @@ class Preprocess:
         self._data_list = cfg['PATH'].get('data_list')
         self._output_dir = cfg['PATH'].get('output_dir')
         # CONFIG
-        self._train_proportion = cfg['CONFIG'].getfloat('train_proportion')
-        self._valid_proportion = cfg['CONFIG'].getfloat('valid_proportion')
         self._window_size = cfg['CONFIG'].getint('window_size')
         self._window_stride = cfg['CONFIG'].getint('window_stride')
         self._sample_rate = cfg['CONFIG'].getint('sample_rate')
@@ -76,11 +71,25 @@ class Preprocess:
             samples.append(data[start:end])
         return samples
     
+    def _next_output_dir(self, label):
+        out_file = os.path.join(self._output_dir, label, f'{str(self._cnt).zfill(6)}_nohash_.wav')
+        self._cnt += 1
+        return out_file
+    
+    def _write_summary(self, label_dict):
+        summary_dir = os.path.join(self._output_dir, 'summary.txt')
+        with open(summary_dir, 'w') as f:
+            printf = partial(print, file=f)
+            printf(f'Output Directory: {os.path.abspath(self._output_dir)}')
+            printf('Label Distribution:')
+            for key in label_dict:
+                printf(f'\t{key}: {label_dict[key]}')
+
     def run(self):
         import tensorflow as tf
         tmp_file = '_temp_.wav'
         label_dict = {}
-        label_cnt = 0
+        fw = open(os.path.join(self._output_dir, 'data.list'), 'w')
 
         with open(self._data_list, 'r') as f:
             line = f.readline()
@@ -92,22 +101,25 @@ class Preprocess:
                 assert sample_rate == self._sample_rate
                 data = data.numpy().reshape((-1))
                 if not (label in label_dict):
-                    label_dict[label] = label_cnt
-                    label_cnt += 1
+                    label_dict[label] = 0
                     os.makedirs(os.path.join(self._output_dir, label), exist_ok=True)
+                label_dict[label] += 1
                 if label == self._background_label:
                     data = self._split_bg_audio(data)
                     for sample in data:
-                        out_file = os.path.join(self._output_dir, label, f'{str(self._cnt).zfill(5)}.wav')
+                        out_file = self._next_output_dir(label)
                         tf.io.write_file(out_file, tf.audio.encode_wav(sample.reshape((-1, 1)), self._sample_rate))
-                        self._cnt += 1
+                        print(f'{os.path.abspath(out_file)} {label}', file=fw)
                 else:
                     sample = self._normalize_audio(data)
-                    out_file = os.path.join(self._output_dir, label, f'{str(self._cnt).zfill(5)}.wav')
+                    out_file = self._next_output_dir(label)
                     tf.io.write_file(out_file, tf.audio.encode_wav(sample.reshape((-1, 1)), self._sample_rate))
-                    self._cnt += 1
+                    print(f'{os.path.abspath(out_file)} {label}', file=fw)
                 line = f.readline()
+
         os.remove(tmp_file)
+        fw.close()
+        self._write_summary(label_dict)
 
 def process(cfg_dir):
     p = Preprocess(cfg_dir)

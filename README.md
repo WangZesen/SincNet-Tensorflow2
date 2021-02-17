@@ -12,3 +12,6 @@ An unofficial implementation of SincNet (https://arxiv.org/pdf/1808.00158.pdf) i
 
 ### Run
 
+### Todo
+
+- [ ] Setup complete data preprocess pipeline

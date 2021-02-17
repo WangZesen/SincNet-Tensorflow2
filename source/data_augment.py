@@ -1,5 +1,6 @@
 from .data.segment import *
 from functools import partial
+from scipy import signal
 import tensorflow as tf
 import numpy as np
 import copy as cp
@@ -133,14 +134,34 @@ class DataAugment:
         random_suffix = '.' + str(random.randint(1e3, 1e4))
         with open(pipeline['reverb_list'], 'r') as f:
             reverb_list = [x.strip('\n') for x in f.readlines()]
-        data = scipy.io.loadmat(reverb_list[0])
-        print(data)
-        print(reverb_list)
-        import matplotlib.pyplot as plt
-        print(data['h_air'].shape)
-        
-        plt.plot(data['h_air'][0, :2000])
-        plt.show()
+        reverbs = []
+        for reverb_dir in reverb_list:
+            audio, sample_rate = tf.audio.decode_wav(tf.io.read_file(reverb_dir))
+            audio = audio.numpy().reshape((-1, ))
+            reverb_norm = (audio - np.min(audio)) / (np.max(audio) - np.min(audio))
+            reverbs.append(reverb_norm)
+        for i in range(len(self._data)):
+            audio_dir = data_list[i]
+            audio, sample_rate = tf.audio.decode_wav(tf.io.read_file(audio_dir))
+            audio = audio.numpy().reshape((-1, ))
+            reverb_index = random.randint(0, len(reverbs) - 1)
+            
+            print(np.mean(audio))
+            print(np.sum(np.multiply(audio, reverbs[reverb_index][:16000])))
+            
+            audio = signal.fftconvolve(audio, reverbs[reverb_index], "same")
+            
+            print(audio.shape)
+            exit(0)
+            reverb_audio_dir = self._data[i][0] + random_suffix
+            hash_index = self._data[i][0].find('_nohash_') + 8
+            assert hash_index >= 8  # Must Contain _nohash_
+            final_audio_dir = self._data[i][0][:hash_index] + suffix + ('_' if self._data[i][0][hash_index] != '.' else '') + self._data[i][0][hash_index:]
+            tf.io.write_file(reverb_audio_dir, tf.audio.encode_wav(audio.reshape((-1, 1)), sample_rate))
+            shutil.copyfile(reverb_audio_dir, final_audio_dir)
+            os.remove(reverb_audio_dir)
+            new_data_list.append(final_audio_dir)
+        return new_data_list
 
     def _apply_shift(self, pipeline, suffix, data_list):
         new_data_list = []
@@ -153,7 +174,10 @@ class DataAugment:
             left, right = get_boarder(audio)
             left = max(left - 100, 0)
             right = min(right + 100, audio.shape[0])
-            random_index = random.randint(0, audio.shape[0] - (right - left + 1))
+            if audio.shape[0] - (right - left + 1) > 0:
+                random_index = random.randint(0, audio.shape[0] - (right - left + 1))
+            else:
+                random_index = 0
             shifted[random_index:random_index + right - left] = audio[left:right]
             shifted = shifted.reshape((-1, 1))
             shifted_audio_dir = self._data[i][0] + random_suffix

@@ -141,7 +141,7 @@ class DataAugment:
         for reverb_dir in reverb_list:
             audio, sample_rate = tf.audio.decode_wav(tf.io.read_file(reverb_dir))
             audio = audio.numpy().reshape((-1, ))
-            reverb_norm = (audio - np.min(audio)) / (np.max(audio) - np.min(audio))
+            reverb_norm = audio / (np.max(audio) - np.min(audio))
             reverbs.append(reverb_norm)
         for i in range(len(self._data)):
             audio_dir = data_list[i]

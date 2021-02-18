@@ -1,15 +1,15 @@
 from .data.segment import *
-from functools import partial
 from scipy import signal
 import tensorflow as tf
 import numpy as np
-import copy as cp
 import configparser
-import subprocess
-import scipy.io
+import logging
 import random
 import shutil
 import os
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 class DataAugment:
     _max_gain_db = 300.0
@@ -22,6 +22,8 @@ class DataAugment:
             '### Augmented data is created in the sample directory with different suffix'
             '#data_list: list of <data> <label> pairs': '',
             'data_list': 'test.list',
+            '#augment_list: list of <data> <label> pairs of augmented data': '',
+            'augment_list': 'augment.list',
         }
         cfg.add_section('AUGMENT-SAMPLE')
         cfg['AUGMENT-SAMPLE'] = {
@@ -58,6 +60,7 @@ class DataAugment:
         cfg.read(cfg_dir)
         # PATH
         self._data_list = cfg['PATH'].get('data_list')
+        self._augment_list = cfg['PATH'].get('augment_list')
         # CONFIG
         self._effects = []
         for section in cfg.sections():
@@ -145,14 +148,12 @@ class DataAugment:
             audio, sample_rate = tf.audio.decode_wav(tf.io.read_file(audio_dir))
             audio = audio.numpy().reshape((-1, ))
             reverb_index = random.randint(0, len(reverbs) - 1)
-            
-            print(np.mean(audio))
-            print(np.sum(np.multiply(audio, reverbs[reverb_index][:16000])))
-            
-            audio = signal.fftconvolve(audio, reverbs[reverb_index], "same")
-            
-            print(audio.shape)
-            exit(0)
+            audio_amplitude = np.max(np.abs(audio))
+            max_ind = np.argmax(np.abs(reverbs[reverb_index]))
+            impulse_resp = reverbs[reverb_index][max_ind:]
+            delay_after = len(impulse_resp)
+            audio = signal.fftconvolve(audio, impulse_resp, "full")[:- delay_after + 1]
+            audio = audio / np.max(np.abs(audio)) * audio_amplitude
             reverb_audio_dir = self._data[i][0] + random_suffix
             hash_index = self._data[i][0].find('_nohash_') + 8
             assert hash_index >= 8  # Must Contain _nohash_
@@ -191,12 +192,19 @@ class DataAugment:
         return new_data_list
 
     def run(self):
+        label_list = list(list(zip(*self._data))[1])
+        f = open(self._augment_list, 'w')
         for effect in self._effects:
-            inplace = False
             data_list = list(list(zip(*self._data))[0])
+            print(f'Start Processing Effect <{effect["name"]}>')
             for pipeline in effect['pipeline']:
+                print(f'\t Pipeline <{pipeline["type"]}>')
                 data_list = self._effect_handler[pipeline['type']](pipeline, effect['suffix'], data_list)
-        
+            data_list = list(zip(data_list, label_list))
+            for item in data_list:
+                print(' '.join(item), file=f)
+        f.close()
+
 def process(cfg_dir):
     p = DataAugment(cfg_dir)
     p.run()

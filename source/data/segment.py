@@ -8,7 +8,7 @@ MAX_NUM_WAVS_PER_CLASS = 2 ** 27 - 1
 def assign_division(filename, train_perc, valid_perc):
     base_name = os.path.basename(filename)
     hash_name = re.sub(r'_nohash_.*$', '', base_name)
-    hash_name_hashed = hashlib.sha1(hash_name).hexdigest()
+    hash_name_hashed = hashlib.sha1(hash_name.encode()).hexdigest()
     percentage_hash = ((int(hash_name_hashed, 16) % (MAX_NUM_WAVS_PER_CLASS + 1)) * (100.0 / MAX_NUM_WAVS_PER_CLASS))
     if percentage_hash < train_perc:
         return 'train'

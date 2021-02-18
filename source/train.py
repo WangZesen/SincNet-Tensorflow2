@@ -1,9 +1,10 @@
-import os
-import random
-import subprocess
-import configparser
+from datetime import datetime
 import tensorflow as tf
+import configparser
 import numpy as np
+import os
+from .data.segment import assign_division
+from .model.visualize import plot_kernel
 from .model.sincnet import SincLayer
 
 class Preprocess:
@@ -16,6 +17,8 @@ class Preprocess:
             'data_list': 'train_data.list',
             '#model_dir: output model directory': '',
             'model_dir': 'models/test',
+            '#log_dir: train log directory': '',
+            'log_dir': 'logs/test/'
         }
         cfg.add_section('CONFIG')
         cfg['CONFIG'] = {
@@ -33,23 +36,34 @@ class Preprocess:
     def _parse_cfg(self, cfg_dir):
         cfg = configparser.ConfigParser()
         cfg.read(cfg_dir)
+        dateTimeObj = datetime.now()
+        timestamp = dateTimeObj.strftime("%Y-%b-%d-%H-%M-%S")
         # PATH
         self._data_list = cfg['PATH'].get('data_list')
         self._model_dir = cfg['PATH'].get('model_dir')
+        self._log_dir = cfg['PATH'].get('log_dir')
+        os.makedirs(self._log_dir, exist_ok=True)
+        self._log_dir = self._log_dir + '/' + timestamp
         # CONFIG
         self._sample_rate = cfg['CONFIG'].getint('sample_rate')
-
-        self._batch_size = 128
+        self._batch_size = 256
 
     def _init_data(self):
         # Read Data List
         with open(self._data_list, 'r') as f:
             lines = f.readlines()
         data = [x.strip('\n') for x in lines]
-        random.shuffle(data)
-
-        train_data = data[:int(len(data) * 0.875)]
-        valid_data = data[int(len(data) * 0.875):]
+        train_data = []
+        valid_data = []
+        test_data = []
+        for item in data:
+            par = assign_division(item.split(' ')[0], 70, 10)
+            if par == 'train':
+                train_data.append(item)
+            elif par == 'test':
+                test_data.append(item)
+            else:
+                valid_data.append(item)
 
         # Collect Labels
         label_dict = {}
@@ -76,28 +90,40 @@ class Preprocess:
         train_ds = tf.data.Dataset.from_tensor_slices(train_data)
         train_ds = train_ds.shuffle(buffer_size=50000)
         train_ds = train_ds.map(__get_waveform_and_label, num_parallel_calls=AUTOTUNE)
-        train_ds = train_ds.batch(self._batch_size)
+        train_ds = train_ds.batch(self._batch_size).prefetch(1)
 
         valid_ds = tf.data.Dataset.from_tensor_slices(valid_data)
         valid_ds = valid_ds.map(__get_waveform_and_label, num_parallel_calls=AUTOTUNE)
-        valid_ds = valid_ds.batch(self._batch_size)
-        return train_ds, valid_ds
+        valid_ds = valid_ds.batch(self._batch_size).prefetch(1)
+
+        test_ds = tf.data.Dataset.from_tensor_slices(test_data)
+        test_ds = test_ds.map(__get_waveform_and_label, num_parallel_calls=AUTOTUNE)
+        test_ds = test_ds.batch(self._batch_size).prefetch(1)
+        return train_ds, valid_ds, test_ds
  
     def _build_model(self):
         model = tf.keras.Sequential([
             tf.keras.layers.Input(shape=[self._sample_rate, 1]),
-            SincLayer(64, 401, 16000, 80),
+            SincLayer(32, 401, 16000, 2),
             tf.keras.layers.ReLU(),
-            tf.keras.layers.Conv1D(64, 7, 2, padding='valid'),
-            tf.keras.layers.ReLU(),
-            tf.keras.layers.Dropout(0.2),
-            tf.keras.layers.Conv1D(32, 7, 2, padding='valid'),
+            tf.keras.layers.Conv1D(64, 7, 3, padding='valid'),
             tf.keras.layers.ReLU(),
             tf.keras.layers.Dropout(0.2),
-            tf.keras.layers.Conv1D(16, 7, 2, padding='valid'),
+            tf.keras.layers.Conv1D(64, 7, 3, padding='valid'),
+            tf.keras.layers.ReLU(),
+            tf.keras.layers.Dropout(0.2),
+            tf.keras.layers.Conv1D(64, 7, 3, padding='valid'),
+            tf.keras.layers.ReLU(),
+            tf.keras.layers.Dropout(0.2),
+            tf.keras.layers.Conv1D(64, 7, 3, padding='valid'),
+            tf.keras.layers.ReLU(),
+            tf.keras.layers.Dropout(0.2),
+            tf.keras.layers.Conv1D(16, 7, 3, padding='valid'),
             tf.keras.layers.ReLU(),
             tf.keras.layers.Dropout(0.2),
             tf.keras.layers.Flatten(),
+            tf.keras.layers.Dense(128, activation=tf.nn.relu),
+            tf.keras.layers.Dropout(0.2),
             tf.keras.layers.Dense(128, activation=tf.nn.relu),
             tf.keras.layers.Dense(self._n_label)
         ])
@@ -105,15 +131,39 @@ class Preprocess:
         return model
 
     def run(self):
-        train_ds, valid_ds = self._init_data()
+        train_ds, valid_ds, test_ds = self._init_data()
         model = self._build_model()
-        
-        optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
+        optimizer = tf.keras.optimizers.RMSprop(learning_rate=1e-4)
         loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
         model.compile(loss=loss, optimizer=optimizer, metrics=['accuracy'])
-        print(model.get_layer(index=0).get_weights())
-        model.fit(train_ds, epochs=40, class_weight=self._class_weight, validation_data=valid_ds)
-        print(model.get_layer(index=0).get_weights())
+        callbacks = [
+            tf.keras.callbacks.EarlyStopping(
+                patience=20,
+                restore_best_weights=True)
+            ]
+
+        f = open(self._log_dir + '.log', 'w')
+        low_cutoff, bandwidth = model.get_layer(index=0).get_weights()
+        print(low_cutoff, file=f)
+        print(bandwidth, file=f)
+        plot_kernel(low_cutoff.reshape((-1, 1)), bandwidth.reshape((-1, 1)), 50 / 16000, 50 / 16000, 16000, 401, self._log_dir + '_init')
+
+        history = model.fit(
+            train_ds,
+            epochs=300,
+            class_weight=self._class_weight,
+            validation_data=valid_ds,
+            callbacks=callbacks)
+        model.save_weights(self._model_dir)
+        print(history.history, file=f)
+
+        low_cutoff, bandwidth = model.get_layer(index=0).get_weights()
+        print(low_cutoff, file=f)
+        print(bandwidth, file=f)
+        plot_kernel(low_cutoff.reshape((-1, 1)), bandwidth.reshape((-1, 1)), 50 / 16000, 50 / 16000, 16000, 401, self._log_dir + '_train')
+
+        print(model.evaluate(test_ds), file=f)
+        f.close()
 
 def process(cfg_dir):
     p = Preprocess(cfg_dir)

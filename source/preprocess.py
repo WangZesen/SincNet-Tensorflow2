@@ -3,6 +3,7 @@ from functools import partial
 import subprocess
 import configparser
 import numpy as np
+from .data.vad import get_interval
 
 class Preprocess:
     @staticmethod
@@ -23,6 +24,16 @@ class Preprocess:
             'window_stride': '797',
             '#sample_rate: sampling rate': '',
             'sample_rate': '16000',
+            '#pos_left: positive samples on the left of true end of keyword': '',
+            'pos_left': '5',
+            '#pos_right: positive samples on the right of true end of keyword': '',
+            'pos_right': '14',
+            '#subsample_stride: stride of subsamples in milisecond (default is 2ms => positive window is 40ms)': '',
+            'subsample_stride': '2',
+            '#neg_left: negative samples on the left of positive window': '',
+            'neg_left': '20',
+            '#neg_right: negative samples on the right of positive window': '',
+            'neg_right': '20',
             '#background_label: label for background': '',
             'background_label': 'bg',
         }
@@ -34,6 +45,9 @@ class Preprocess:
         self._cnt = 0
         self._window_size_in_sample = int(self._sample_rate * self._window_size / 1000)
         self._window_stride_in_sample = int(self._sample_rate * self._window_stride / 1000)
+        self._subsample_stride_in_sample = int(self._sample_rate * self._subsample_stride / 1000)
+        extended = self._pos_left + self._neg_left + self._pos_right + self._neg_right
+        self._bg_window_size_in_sample = self._window_size_in_sample + extended * self._subsample_stride_in_sample
         os.makedirs(self._output_dir, exist_ok=True)
 
     def _parse_cfg(self, cfg_dir):
@@ -47,27 +61,38 @@ class Preprocess:
         self._window_stride = cfg['CONFIG'].getint('window_stride')
         self._sample_rate = cfg['CONFIG'].getint('sample_rate')
         self._background_label = cfg['CONFIG'].get('background_label')
+        self._pos_left = cfg['CONFIG'].getint('pos_left')
+        self._pos_right = cfg['CONFIG'].getint('pos_right')
+        self._neg_left = cfg['CONFIG'].getint('neg_left')
+        self._neg_right = cfg['CONFIG'].getint('neg_right')
+        self._subsample_stride = cfg['CONFIG'].getint('subsample_stride')
     
-    def _normalize_audio(self, data):
+    def _normalize_audio(self, data, end):
+        left = end - (self._pos_left + self._neg_left) * self._subsample_stride_in_sample - self._window_size_in_sample
+        if left < 0:
+            pad = np.zeros((- left, ))
+            data = np.concatenate((pad, data), axis=0)
+            end = end + (- left)
+        right = end + (self._pos_right + self._neg_right) * self._subsample_stride_in_sample
         n_samples = data.shape[0]
-        if n_samples > self._window_size_in_sample:
-            data = data[:self._window_size_in_sample]
-        elif n_samples < self._window_size_in_sample:
-            pad = np.zeros((self._window_size_in_sample - n_samples, ))
+        if n_samples >= right:
+            data = data[:right]
+        else:
+            pad = np.zeros((right - n_samples, ))
             data = np.concatenate((pad, data), axis=0)
         return data
     
     def _split_bg_audio(self, data):
         n_samples = data.shape[0]
-        if n_samples < self._window_size_in_sample:
-            pad = np.zeros((self._window_size_in_sample - n_samples, ))
+        if n_samples < self._bg_window_size_in_sample:
+            pad = np.zeros((self._bg_window_size_in_sample - n_samples, ))
             data = np.concatenate((pad, data), axis=0)
-            n_samples = self._window_size_in_sample
-        cnt = (n_samples - self._window_size_in_sample) // self._window_stride_in_sample
+            n_samples = self._bg_window_size_in_sample
+        cnt = (n_samples - self._bg_window_size_in_sample) // self._bg_window_size_in_sample
         samples = []
         for index in range(cnt + 1):
-            start = index * self._window_stride_in_sample
-            end = self._window_size_in_sample + index * self._window_size_in_sample
+            start = index * self._bg_window_size_in_sample
+            end = self._bg_window_size_in_sample + index * self._bg_window_size_in_sample
             samples.append(data[start:end])
         return samples
     
@@ -111,10 +136,13 @@ class Preprocess:
                         tf.io.write_file(out_file, tf.audio.encode_wav(sample.reshape((-1, 1)), self._sample_rate))
                         print(f'{os.path.abspath(out_file)} {label}', file=fw)
                 else:
-                    sample = self._normalize_audio(data)
-                    out_file = self._next_output_dir(label)
-                    tf.io.write_file(out_file, tf.audio.encode_wav(sample.reshape((-1, 1)), self._sample_rate))
-                    print(f'{os.path.abspath(out_file)} {label}', file=fw)
+                    start, end = get_interval(tmp_file)
+                    if end > 0:
+                        end = int(end / 1000 * self._sample_rate)
+                        sample = self._normalize_audio(data, end)
+                        out_file = self._next_output_dir(label)
+                        tf.io.write_file(out_file, tf.audio.encode_wav(sample.reshape((-1, 1)), self._sample_rate))
+                        print(f'{os.path.abspath(out_file)} {label}', file=fw)
                 line = f.readline()
 
         os.remove(tmp_file)

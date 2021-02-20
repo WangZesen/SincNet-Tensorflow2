@@ -40,15 +40,19 @@ class TrainTool:
             '#: label for background': '',
             'background_label': 'bg',
             '#pos_left: positive samples on the left of true end of keyword': '',
-            'pos_left': '5',
+            'pos_left': '3',
             '#pos_right: positive samples on the right of true end of keyword': '',
-            'pos_right': '14',
-            '#subsample_stride: stride of subsamples in milisecond (default is 2ms => positive window is 40ms)': '',
-            'subsample_stride': '2',
-            '#neg_left: negative samples on the left of positive window': '',
-            'neg_left': '20',
-            '#neg_right: negative samples on the right of positive window': '',
-            'neg_right': '20',
+            'pos_right': '4',
+            '#subsample_stride: stride of subsamples in milisecond (default is 5ms => positive window is 40ms)': '',
+            'subsample_stride': '5',
+            '#margin_left: margin samples on the left of positive window': '',
+            'margin_left': '40',
+            '#margin_right: margin samples on the right of positive window': '',
+            'margin_right': '40',
+            '#neg_left: negative samples on the left of margin window': '',
+            'neg_left': '5',
+            '#neg_right: negative samples on the right of margin window': '',
+            'neg_right': '5',
         }
         cfg.add_section('AUGMENT-BG')
         cfg['AUGMENT-BG'] = {
@@ -114,7 +118,7 @@ class TrainTool:
         self._window_size_in_sample = int(self._sample_rate * self._window_size / 1000)
         self._subsample_stride_in_sample = int(self._subsample_stride / 1000 * self._sample_rate)
         pos_label = np.zeros((self._pos_left + self._pos_right + self._neg_left + self._neg_right + 1, ))
-        pos_label[self._neg_left:self._pos_left + self._neg_left + self._pos_right + 1] = 1
+        pos_label[self._neg_left:self._neg_left + self._pos_left + self._pos_right + 1] = 1
         self._pos_label = tf.constant(pos_label, dtype=tf.int32)
         self._reverb_cache = {}
         self._noise_cache = {}
@@ -139,6 +143,8 @@ class TrainTool:
         self._pos_right = cfg['CONFIG'].getint('pos_right')
         self._neg_left = cfg['CONFIG'].getint('neg_left')
         self._neg_right = cfg['CONFIG'].getint('neg_right')
+        self._margin_left = cfg['CONFIG'].getint('margin_left')
+        self._margin_right = cfg['CONFIG'].getint('margin_right')
         self._online_augment = cfg['CONFIG'].getboolean('online_augment')
         # HYPERPARAMETERS
         self._batch_size = cfg['HYPERPARAMETERS'].getint('batch_size')
@@ -239,6 +245,17 @@ class TrainTool:
         
         def __get_waveform_window(waveform):
             waveform = tf.signal.frame(waveform, self._window_size_in_sample, self._subsample_stride_in_sample, axis=0)
+            neg_left, _, pos, _, neg_right = tf.split(waveform, 
+                [
+                    self._neg_left,
+                    self._margin_left,
+                    self._pos_left + self._pos_right + 1,
+                    self._margin_right,
+                    self._neg_right,
+                ],
+                axis=0
+            )
+            waveform = tf.concat([neg_left, pos, neg_right], axis=0)
             waveform = tf.expand_dims(waveform, -1)
             return waveform
         
@@ -277,7 +294,7 @@ class TrainTool:
                     audio_amplitude = np.max(np.abs(waveform))
                     delay_after = len(reverb)
                     waveform = signal.fftconvolve(waveform, reverb, "full")[:- delay_after + 1]
-                    waveform = waveform / np.max(np.abs(waveform)) * audio_amplitude
+                    waveform = waveform / (np.max(np.abs(waveform)) + 1e-9) * audio_amplitude
                 elif param['type'] == 'noise':
                     index = random.randint(0, len(param['noise_list']) - 1)
                     if param['memcache'] and (param['noise_list'][index] in self._noise_cache):
@@ -359,14 +376,20 @@ class TrainTool:
         #     exit(0)
 
         model = self._build_model()
-        optimizer = tf.keras.optimizers.RMSprop(learning_rate=1e-3)
+        optimizer = tf.keras.optimizers.RMSprop(learning_rate=1e-4)
         loss = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True)
         model.compile(loss=loss, optimizer=optimizer, metrics=['accuracy'])
         callbacks = [
             tf.keras.callbacks.EarlyStopping(
                 patience=20,
-                restore_best_weights=True)
-            ]
+                restore_best_weights=True
+            ),
+            tf.keras.callbacks.ModelCheckpoint(
+                self._model_dir,
+                save_best_only=True,
+                save_weights_only=True
+            ),
+        ]
 
         f = open(self._log_dir + '.log', 'w')
         low_cutoff, bandwidth = model.get_layer(index=0).get_weights()
@@ -376,11 +399,11 @@ class TrainTool:
 
         history = model.fit(
             train_ds,
-            epochs=300,
+            epochs=50,
             class_weight=self._class_weight,
             validation_data=valid_ds,
             callbacks=callbacks)
-        model.save_weights(self._model_dir)
+        # model.save_weights(self._model_dir)
         print(history.history, file=f)
 
         low_cutoff, bandwidth = model.get_layer(index=0).get_weights()

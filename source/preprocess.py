@@ -25,15 +25,19 @@ class Preprocess:
             '#sample_rate: sampling rate': '',
             'sample_rate': '16000',
             '#pos_left: positive samples on the left of true end of keyword': '',
-            'pos_left': '5',
+            'pos_left': '3',
             '#pos_right: positive samples on the right of true end of keyword': '',
-            'pos_right': '14',
-            '#subsample_stride: stride of subsamples in milisecond (default is 2ms => positive window is 40ms)': '',
-            'subsample_stride': '2',
-            '#neg_left: negative samples on the left of positive window': '',
-            'neg_left': '20',
-            '#neg_right: negative samples on the right of positive window': '',
-            'neg_right': '20',
+            'pos_right': '4',
+            '#subsample_stride: stride of subsamples in milisecond (default is 5ms => positive window is 40ms)': '',
+            'subsample_stride': '5',
+            '#margin_left: margin samples on the left of positive window': '',
+            'margin_left': '40',
+            '#margin_right: margin samples on the right of positive window': '',
+            'margin_right': '40',
+            '#neg_left: negative samples on the left of margin window': '',
+            'neg_left': '5',
+            '#neg_right: negative samples on the right of margin window': '',
+            'neg_right': '5',
             '#background_label: label for background': '',
             'background_label': 'bg',
         }
@@ -46,7 +50,7 @@ class Preprocess:
         self._window_size_in_sample = int(self._sample_rate * self._window_size / 1000)
         self._window_stride_in_sample = int(self._sample_rate * self._window_stride / 1000)
         self._subsample_stride_in_sample = int(self._sample_rate * self._subsample_stride / 1000)
-        extended = self._pos_left + self._neg_left + self._pos_right + self._neg_right
+        extended = self._pos_left + self._margin_left + self._neg_left + self._pos_right + self._margin_right + self._neg_right
         self._bg_window_size_in_sample = self._window_size_in_sample + extended * self._subsample_stride_in_sample
         os.makedirs(self._output_dir, exist_ok=True)
 
@@ -63,17 +67,22 @@ class Preprocess:
         self._background_label = cfg['CONFIG'].get('background_label')
         self._pos_left = cfg['CONFIG'].getint('pos_left')
         self._pos_right = cfg['CONFIG'].getint('pos_right')
+        self._margin_left = cfg['CONFIG'].getint('margin_left')
+        self._margin_right = cfg['CONFIG'].getint('margin_right')
         self._neg_left = cfg['CONFIG'].getint('neg_left')
         self._neg_right = cfg['CONFIG'].getint('neg_right')
         self._subsample_stride = cfg['CONFIG'].getint('subsample_stride')
     
     def _normalize_audio(self, data, end):
-        left = end - (self._pos_left + self._neg_left) * self._subsample_stride_in_sample - self._window_size_in_sample
+        left = end - (self._pos_left + self._margin_left + self._neg_left) * self._subsample_stride_in_sample - self._window_size_in_sample
         if left < 0:
             pad = np.zeros((- left, ))
             data = np.concatenate((pad, data), axis=0)
             end = end + (- left)
-        right = end + (self._pos_right + self._neg_right) * self._subsample_stride_in_sample
+        else:
+            data = data[left:]
+            end = end - left
+        right = end + (self._pos_right + self._margin_right + self._neg_right) * self._subsample_stride_in_sample
         n_samples = data.shape[0]
         if n_samples >= right:
             data = data[:right]

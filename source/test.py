@@ -2,7 +2,9 @@ from datetime import datetime
 import tensorflow as tf
 import configparser
 import numpy as np
+import ast
 import os
+import time
 from .data.segment import assign_division
 from .model.visualize import plot_kernel
 from .model.sincnet import SincLayer
@@ -13,8 +15,8 @@ class TestTool:
         cfg = configparser.ConfigParser(allow_no_value=True)
         cfg.add_section('PATH')
         cfg['PATH'] = {
-            '#data_list: list of <data> <label> pairs': '',
-            'data_list': 'train_data.list',
+            '#data_list: list of audio': '',
+            'data_list': 'data/fr_test.list',
             '#model_dir: output model directory': '',
             'model_dir': 'models/test',
             '#log_dir: train log directory': '',
@@ -22,16 +24,21 @@ class TestTool:
         }
         cfg.add_section('CONFIG')
         cfg['CONFIG'] = {
+            '#mode: FR (false reject test) or FA (false alarm test)': '',
+            'mode': 'FR',
             '#sample_rate: sampling rate': '',
             'sample_rate': '16000',
-            # '#: label for background': '',
-            # 'backgronnd_label': 'bg',
+            '#durations: options of durations for activate': '',
+            'durations': '[5, 6, 7, 8]',
+            '#thresholds, options of thresholds for activate': '',
+            'thresholds': '[0.75, 0.8, 0.85, 0.9]',
         }
         with open(temp_dir, 'w') as f:
             cfg.write(f)
     
     def __init__(self, cfg_dir):
         self._parse_cfg(cfg_dir)
+        self._pad = tf.zeros([self._sample_rate, 1], dtype=tf.float32)
 
     def _parse_cfg(self, cfg_dir):
         cfg = configparser.ConfigParser()
@@ -44,62 +51,31 @@ class TestTool:
         self._log_dir = cfg['PATH'].get('log_dir')
         os.makedirs(self._log_dir, exist_ok=True)
         self._log_dir = self._log_dir + '/' + timestamp
+        
         # CONFIG
+        self._mode = cfg['CONFIG']['mode']
         self._sample_rate = cfg['CONFIG'].getint('sample_rate')
-        self._batch_size = 256
+        self._thresholds = ast.literal_eval(cfg['CONFIG'].get('thresholds'))
+        self._durations = ast.literal_eval(cfg['CONFIG'].get('durations'))
 
     def _init_data(self):
         # Read Data List
         with open(self._data_list, 'r') as f:
             lines = f.readlines()
-        data = [x.strip('\n') for x in lines]
-        train_data = []
-        valid_data = []
-        test_data = []
-        for item in data:
-            par = assign_division(item.split(' ')[0], 70, 10)
-            if par == 'train':
-                train_data.append(item)
-            elif par == 'test':
-                test_data.append(item)
-            else:
-                valid_data.append(item)
-
-        # Collect Labels
-        label_dict = {}
-        for i in range(len(data)):
-            label = data[i].split(' ')[1]
-            label_dict[label] = label_dict.get(label, 0) + 1
-        labels = np.array(list(label_dict.keys()))
-        self._n_label = labels.shape[0]
-        self._n_total_sample = sum([label_dict[key] for key in label_dict])
-        inverse_sum = sum([1 / label_dict[key] for key in label_dict])
-        self._class_weight = {}
-        for i in range(len(labels)):
-            self._class_weight[i] = (1 / label_dict[labels[i]]) / inverse_sum * len(labels)
+        test_data = [x.strip('\n') for x in lines]
+        self._n_total = len(test_data)
 
         # Parse Function
-        def __get_waveform_and_label(raw_data):
-            content = tf.strings.split(raw_data, ' ')
-            waveform, _ = tf.audio.decode_wav(tf.io.read_file(content[0]))
-            label = tf.argmax(content[1] == labels)
-            return waveform, label
+        def __get_waveform(raw_data):
+            waveform, _ = tf.audio.decode_wav(tf.io.read_file(raw_data))
+            waveform = tf.concat([self._pad, waveform, self._pad], axis=0)
+            return waveform
         
         AUTOTUNE = tf.data.AUTOTUNE if tf.__version__.startswith('2.4') else tf.data.experimental.AUTOTUNE
-
-        train_ds = tf.data.Dataset.from_tensor_slices(train_data)
-        train_ds = train_ds.shuffle(buffer_size=50000)
-        train_ds = train_ds.map(__get_waveform_and_label, num_parallel_calls=AUTOTUNE)
-        train_ds = train_ds.batch(self._batch_size).prefetch(1)
-
-        valid_ds = tf.data.Dataset.from_tensor_slices(valid_data)
-        valid_ds = valid_ds.map(__get_waveform_and_label, num_parallel_calls=AUTOTUNE)
-        valid_ds = valid_ds.batch(self._batch_size).prefetch(1)
-
         test_ds = tf.data.Dataset.from_tensor_slices(test_data)
-        test_ds = test_ds.map(__get_waveform_and_label, num_parallel_calls=AUTOTUNE)
-        test_ds = test_ds.batch(self._batch_size).prefetch(1)
-        return train_ds, valid_ds, test_ds
+        test_ds = test_ds.map(__get_waveform, num_parallel_calls=AUTOTUNE)
+        test_ds = test_ds.batch(1).prefetch(1)
+        return test_ds
  
     def _build_model(self):
         model = tf.keras.Sequential([
@@ -125,7 +101,7 @@ class TestTool:
             tf.keras.layers.Dense(128, activation=tf.nn.relu),
             tf.keras.layers.Dropout(0.2),
             tf.keras.layers.Dense(128, activation=tf.nn.relu),
-            tf.keras.layers.Dense(3)
+            tf.keras.layers.Dense(2)
         ])
         model.summary()
         return model
@@ -133,9 +109,7 @@ class TestTool:
     def _collect_layers(self, model, n_cache_conv = 4):
         # Collect Layers Before Flatten
         before_layers = []
-        print(model.layers)
         for layer in model.layers:
-            print(layer.output_shape)
             if layer.name.find('dropout') == -1:
                 if layer.name.find('flatten') >= 0:
                     break
@@ -152,40 +126,73 @@ class TestTool:
         return before_layers, after_layers
 
     def run(self):
-        # train_ds, valid_ds, test_ds = self._init_data()
+        test_ds = self._init_data()
         model = self._build_model()
         model.load_weights(self._model_dir)
         before_layers, after_layers = self._collect_layers(model)
         
-        pad = tf.zeros([1, 16000, 1], dtype=tf.float32)
-        
-        x, _ = tf.audio.decode_wav(tf.io.read_file('four/002138_nohash_ftlk-snr10.wav'))
-        x = tf.reshape(x, [1, -1, 1])
-        x = tf.concat([pad, x, pad], axis=1)
+        accept = [[0 for col in range(len(self._durations))] for row in range(len(self._thresholds))]
 
-        for layer in before_layers:
-            x = layer(x)
-        x = tf.signal.frame(x, 30, 1, axis=1)
-        x = tf.reshape(x, [x.shape[1], -1])
-        print(x.shape)
-        for layer in after_layers:
-            x = layer(x)
-        x = tf.nn.softmax(x).numpy()
+        cnt = 0
+        self._len_total = 0
+        for x in test_ds:
+            self._len_total += x.shape[1] - 2 * self._sample_rate
+            cnt += 1
+            print(f'Processing {cnt}', end='\r')
+            start = time.time()
 
-        thresholds = 0.8
-        
-        with open('tmp.log', 'w') as f:
-            durs = [0, 0, 0]
-            restart = 0
-            for i in range(x.shape[0]):
-                index = np.argmax(x[i])
-                durs = [((durs[i] + 1) if i == index else 0) for i in range(len(durs))]
-                restart += 1
-                if (durs[index] > 8) and (restart * 486 >= 16000) and (index != 2):
-                    print(f'<{index}> Trigger at {i * 486 / 16000}')
+            for layer in before_layers:
+                x = layer(x)
+            x = tf.signal.frame(x, 30, 1, axis=1)
+            x = tf.reshape(x, [x.shape[1], -1])
+            for layer in after_layers:
+                x = layer(x)
+            x = tf.nn.softmax(x).numpy()
+
+            # print(f'Inference Time Eclipsed: {time.time() - start}')
+            start = time.time()
+            # with open('tmp.log', 'w') as f:
+            #     for i in range(x.shape[0]):
+            #         print(f'[{x[i][0]}, {x[i][1]}],', file=f)
+
+            for threshold_index in range(len(self._thresholds)):
+                for duration_index in range(len(self._durations)):
+                    threshold = self._thresholds[threshold_index]
+                    duration = self._durations[duration_index]
+
+                    durs = [0, 0]
                     restart = 0
-                print(f"[{','.join([str(y) for y in x[i]])}],", file=f)
-
+                    for i in range(x.shape[0]):
+                        index = np.argmax(x[i])
+                        if x[i][index] >= threshold:
+                            durs = [((durs[i] + 1) if i == index else 0) for i in range(len(durs))]
+                        else:
+                            durs = [0 for _ in durs]
+                        restart += 1
+                        if (durs[index] >= duration) and (restart * 486 >= 16000) and (index != 0):
+                            accept[threshold_index][duration_index] += 1
+                            if self._mode == 'FR':
+                                break
+                            restart = 0
+                            durs = [0 for _ in durs]
+            # print(f'Loop Time Eclipsed: {time.time() - start}')
+            len_total = self._len_total / self._sample_rate / 60 / 60
+            # for threshold_index in range(len(self._thresholds)):
+            #     for duration_index in range(len(self._durations)):
+            #         if self._mode == 'FR':
+            #             print(1 - accept[threshold_index][duration_index] / self._n_total, end='\t')
+            #         else:
+            #             print(accept[threshold_index][duration_index] / len_total, end='\t')
+            #     print()
+        self._len_total = self._len_total / self._sample_rate / 60 / 60
+        
+        for threshold_index in range(len(self._thresholds)):
+            for duration_index in range(len(self._durations)):
+                if self._mode == 'FR':
+                    print(1 - accept[threshold_index][duration_index] / self._n_total, end='\t')
+                else:
+                    print(accept[threshold_index][duration_index] / self._len_total, end='\t')
+            print()
 
 def process(cfg_dir):
     p = TestTool(cfg_dir)
